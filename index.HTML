@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+
+
+    <!-- アイコンをつけるときは、<head> タグの中（<meta>タグの下など）に追加してください -->
+<link rel="icon" href="icon.png" type="image/png">
+<link rel="apple-touch-icon" href="icon.png">
+
+
+
+
+<title>カロリー計算カレンダー</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;background:#f5f6f8;color:#222}
+header{display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 8px;background:#fff;border-bottom:1px solid #ddd}
+header button{width:46px;height:46px;border:0;border-radius:9px;background:#eee;color:#222;font-size:28px;line-height:1;cursor:pointer}
+#monthTitle{min-width:130px;text-align:center;font-size:19px;font-weight:700}
+main{max-width:900px;margin:12px auto;padding:0 6px}
+.week{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.week div{text-align:center;padding:7px 0;background:#e8e9ec;font-size:13px;font-weight:700}
+.week div:first-child{color:#d33}.week div:last-child{color:#36c}
+.calendar{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.day{height:88px;background:#fff;border:1px solid #ddd;padding:6px;position:relative;cursor:pointer}
+.day.empty{background:#eee;cursor:default}
+.daynum{font-weight:700;font-size:14px}
+.calorie{position:absolute;left:1px;right:1px;top:38px;text-align:center;font-size:13px;font-weight:700}
+.detail{display:none;position:fixed;inset:0;background:#f5f6f8;z-index:10}
+.detail.active{display:flex;flex-direction:column}
+.detailHeader{padding:15px;background:#fff;border-bottom:1px solid #ddd;text-align:center;font-size:20px;font-weight:700}
+.detailBody{flex:1;display:flex;flex-direction:column;padding:12px;max-width:900px;width:100%;margin:auto}
+textarea{flex:1;min-height:240px;width:100%;border:1px solid #bbb;border-radius:10px;padding:14px;font-size:17px;line-height:1.7;resize:none;background:#fff}
+.result{display:none;margin-top:10px;padding:12px;background:#fff;border:1px solid #ddd;border-radius:10px}
+.total{font-size:21px;font-weight:700;margin-bottom:8px}
+.detailText{white-space:pre-wrap;font-size:14px;line-height:1.6}
+.error{color:#b00020;white-space:pre-wrap;font-size:13px;line-height:1.5}
+.actions{padding-top:10px}
+.actions button{display:block;width:100%;margin-bottom:9px;padding:14px;border:0;border-radius:8px;color:#fff;font-size:18px}
+#calcBtn{background:#1677ff}#closeBtn{background:#555}
+.note{text-align:center;color:#666;font-size:12px}
+</style>
+</head>
+<body>
+
+<header>
+<button id="prevBtn" type="button" aria-label="前の月">‹</button>
+<div id="monthTitle"></div>
+<button id="nextBtn" type="button" aria-label="次の月">›</button>
+</header>
+
+<main>
+<div class="week">
+<div>日</div><div>月</div><div>火</div><div>水</div><div>木</div><div>金</div><div>土</div>
+</div>
+<div id="calendar" class="calendar"></div>
+</main>
+
+<section id="detail" class="detail">
+<div id="detailDate" class="detailHeader"></div>
+<div class="detailBody">
+<textarea id="foodText" placeholder="食べたものを入力してください。
+
+例：
+朝：ご飯1杯、納豆、味噌汁
+昼：てりやきマックバーガーセット
+夜：ご飯、焼き魚、野菜炒め
+間食：チョコレート"></textarea>
+<div id="result" class="result"></div>
+<div class="actions">
+<button id="calcBtn" type="button">カロリー計算</button>
+<button id="closeBtn" type="button">閉じる</button>
+<div class="note">食事内容と計算結果はこのiPhoneのSafariに保存されます。</div>
+</div>
+</div>
+</section>
+
+<script type="module">
+
+/* Firebase SDK */
+
+
+/* Gemini API設定 */
+const GEMINI_API_KEY="AQ.Ab8RN6LhH6zJN32wP_NvWrRmqUJibBNs8TCCvtGxpAnF7VU4Uw";
+const GEMINI_URL="https://generativelanguage.googleapis.com/v1beta/interactions";
+
+
+/* 年と月を完全に独立して管理 */
+let currentYear=new Date().getFullYear();
+let currentMonth=new Date().getMonth()+1;
+
+let selectedDate="";
+let currentKcal=null;
+let currentDetail="";
+
+let monthData={};
+
+
+/* HTML要素 */
+const calendar=document.getElementById("calendar");
+const monthTitle=document.getElementById("monthTitle");
+const detail=document.getElementById("detail");
+const detailDate=document.getElementById("detailDate");
+const foodText=document.getElementById("foodText");
+const result=document.getElementById("result");
+
+
+/* 現在表示月のキー */
+function getMonthKey(){
+  return String(currentYear)+"-"+String(currentMonth).padStart(2,"0");
+}
+
+
+/* 日付キー */
+function getDateKey(day){
+  return getMonthKey()+"-"+String(day).padStart(2,"0");
+}
+
+
+/* 前月へ */
+function goPreviousMonth(){
+
+  if(currentMonth===1){
+    currentMonth=12;
+    currentYear=currentYear-1;
+  }else{
+    currentMonth=currentMonth-1;
+  }
+
+  watchMonth();
+}
+
+
+/* 翌月へ */
+function goNextMonth(){
+
+  if(currentMonth===12){
+    currentMonth=1;
+    currentYear=currentYear+1;
+  }else{
+    currentMonth=currentMonth+1;
+  }
+
+  watchMonth();
+}
+
+
+/* iPhoneのSafariのlocalStorageから現在月を読み込む */
+function watchMonth(){
+
+  monthData={};
+
+  const prefix=getMonthKey()+"-";
+
+  for(let i=0;i<localStorage.length;i++){
+
+    const key=localStorage.key(i);
+
+    if(key && key.indexOf("calorieapp_")===0){
+
+      const dateKey=key.substring("calorieapp_".length);
+
+      if(dateKey.indexOf(prefix)===0){
+
+        try{
+          monthData[dateKey]=JSON.parse(
+            localStorage.getItem(key)
+          );
+        }catch(error){
+          console.error(error);
+        }
+      }
+    }
+  }
+
+  monthTitle.textContent=
+    currentYear+"年"+currentMonth+"月";
+
+  renderCalendar();
+}
+
+
+/* カレンダー描画 */
+function renderCalendar(){
+
+  calendar.innerHTML="";
+
+  monthTitle.textContent=
+    currentYear+"年"+currentMonth+"月";
+
+  const firstDay=
+    new Date(
+      currentYear,
+      currentMonth-1,
+      1
+    ).getDay();
+
+  const lastDay=
+    new Date(
+      currentYear,
+      currentMonth,
+      0
+    ).getDate();
+
+
+  /* 月初の空白 */
+  for(let i=0;i<firstDay;i++){
+
+    const cell=
+      document.createElement("div");
+
+    cell.className="day empty";
+
+    calendar.appendChild(cell);
+  }
+
+
+  /* 日付 */
+  for(let day=1;day<=lastDay;day++){
+
+    const cell=
+      document.createElement("div");
+
+    cell.className="day";
+
+
+    const daynum=
+      document.createElement("div");
+
+    daynum.className="daynum";
+    daynum.textContent=day;
+
+    cell.appendChild(daynum);
+
+
+    const dateStr=
+      getDateKey(day);
+
+    const saved=
+      monthData[dateStr];
+
+
+    if(
+      saved &&
+      Number.isFinite(Number(saved.kcal))
+    ){
+
+      const kcal=
+        document.createElement("div");
+
+      kcal.className="calorie";
+      kcal.textContent=
+        Number(saved.kcal)+" kcal";
+
+      cell.appendChild(kcal);
+    }
+
+
+    cell.addEventListener(
+      "click",
+      function(){
+        openDay(dateStr);
+      }
+    );
+
+    calendar.appendChild(cell);
+  }
+}
+
+
+/* 日付を開く */
+function openDay(dateStr){
+
+  selectedDate=dateStr;
+
+  const parts=
+    dateStr.split("-").map(Number);
+
+  detailDate.textContent=
+    parts[0]+"年"+parts[1]+"月"+parts[2]+"日";
+
+  const saved=
+    monthData[dateStr];
+
+
+  if(saved){
+
+    foodText.value=
+      saved.text||"";
+
+    currentKcal=
+      saved.kcal!=null
+      ? Number(saved.kcal)
+      : null;
+
+    currentDetail=
+      saved.detail||"";
+
+  }else{
+
+    foodText.value="";
+    currentKcal=null;
+    currentDetail="";
+  }
+
+
+  showResult();
+
+  detail.classList.add("active");
+}
+
+
+/* 結果表示 */
+function showResult(){
+
+  if(
+    currentKcal!==null &&
+    Number.isFinite(currentKcal)
+  ){
+
+    result.style.display="block";
+
+    result.innerHTML=
+      '<div class="total">合計：約 '+
+      currentKcal+
+      ' kcal</div>'+
+      '<div class="detailText">'+
+      escapeHtml(currentDetail)+
+      '</div>';
+
+  }else{
+
+    result.style.display="none";
+    result.innerHTML="";
+  }
+}
+
+
+/* iPhoneのSafariへ保存 */
+async function saveDay(){
+
+  const key="calorieapp_"+selectedDate;
+
+  const data={
+    text:foodText.value,
+    kcal:currentKcal,
+    detail:currentDetail,
+    updatedAt:new Date().toISOString()
+  };
+
+  localStorage.setItem(key,JSON.stringify(data));
+  monthData[selectedDate]=data;
+}
+
+
+/* 閉じる */
+async function closeDay(){
+
+  if(selectedDate && foodText.value.trim()){
+
+    try{
+      await saveDay();
+    }catch(error){
+
+      alert(
+        "iPhoneへの保存に失敗しました。\n\n"+
+        error.message
+      );
+
+      return;
+    }
+  }
+
+  /* 保存した内容をカレンダーへ即時反映 */
+  renderCalendar();
+
+  detail.classList.remove("active");
+}
+
+
+/* Geminiで計算 */
+async function calculateCalories(){
+
+  const text=
+    foodText.value.trim();
+
+  if(!text){
+
+    alert(
+      "食べたものを入力してください。"
+    );
+
+    return;
+  }
+
+
+  const btn=
+    document.getElementById("calcBtn");
+
+  btn.disabled=true;
+  btn.textContent="計算中…";
+
+  result.style.display="block";
+  result.innerHTML=
+    "カロリーを計算しています…";
+
+
+  const prompt=
+`以下の食事内容の摂取カロリーを推定してください。
+日本で一般的な食品成分と標準的な1人前を基準にしてください。
+数量がある場合は数量を優先してください。
+数量がない場合は一般的な1人前として推定してください。
+アルコールも含めてください。
+食品ごとの推定カロリーを簡潔に示してください。
+最後の行は必ず「合計: 1234 kcal」の形式にしてください。
+日常的な目安として回答してください。
+
+食事内容：
+${text}`;
+
+
+  try{
+
+    const response=
+      await fetch(
+        GEMINI_URL,
+        {
+          method:"POST",
+
+          headers:{
+            "Content-Type":"application/json",
+            "x-goog-api-key":GEMINI_API_KEY
+          },
+
+          body:JSON.stringify({
+            model:"gemini-3.5-flash-lite",
+            input:prompt
+          })
+        }
+      );
+
+
+    if(!response.ok){
+
+      const errorText=
+        await response.text();
+
+      let message=
+        "Gemini API HTTP "+
+        response.status+
+        "\n\n"+
+        errorText;
+
+      if(response.status===429){
+        message=
+          "Gemini APIの利用上限（クォータ）に達しています。\n\n"+
+          "少し時間を置いて再試行してください。\n"+
+          "それでも続く場合はGoogle AI StudioのAPI利用状況を確認してください。\n\n"+
+          errorText;
+      }
+
+      throw new Error(message);
+    }
+
+
+    const data=
+      await response.json();
+
+    let answer=data.output_text||"";
+
+    /* Interactions APIのmodel_outputから本文を取得 */
+    if(
+      !answer &&
+      Array.isArray(data.steps)
+    ){
+      for(const step of data.steps){
+
+        if(
+          step.type==="model_output" &&
+          Array.isArray(step.content)
+        ){
+          for(const item of step.content){
+
+            if(
+              item.type==="text" &&
+              typeof item.text==="string"
+            ){
+              answer+=item.text;
+            }
+          }
+        }
+      }
+    }
+
+    /* 念のためoutputs形式にも対応 */
+    if(
+      !answer &&
+      Array.isArray(data.outputs)
+    ){
+      for(const output of data.outputs){
+
+        if(typeof output.text==="string"){
+          answer+=output.text;
+        }
+
+        if(Array.isArray(output.content)){
+          for(const item of output.content){
+            if(typeof item.text==="string"){
+              answer+=item.text;
+            }
+          }
+        }
+      }
+    }
+
+
+    if(!answer){
+
+      throw new Error(
+        "Geminiから回答が返ってきませんでした。\n\n"+
+        JSON.stringify(data,null,2)
+      );
+    }
+
+
+    const match=
+      answer.match(
+        /合計\s*[:：]?\s*(?:約\s*)?([\d,]+)\s*(?:kcal|キロカロリー)/i
+      );
+
+
+    if(!match){
+
+      throw new Error(
+        "合計カロリーを取得できませんでした。\n\n"+
+        answer
+      );
+    }
+
+
+    currentKcal=
+      Math.round(
+        Number(
+          match[1].replace(/,/g,"")
+        )
+      );
+
+    currentDetail=answer;
+
+
+    showResult();
+
+
+    await saveDay();
+
+  }catch(error){
+
+    console.error(error);
+
+    result.innerHTML=
+      '<div class="error">'+
+      'カロリー計算に失敗しました。\n\n'+
+      escapeHtml(
+        error.message||String(error)
+      )+
+      '</div>';
+
+  }finally{
+
+    btn.disabled=false;
+    btn.textContent="カロリー計算";
+  }
+}
+
+
+/* HTMLエスケープ */
+function escapeHtml(text){
+
+  return String(text).replace(
+    /[&<>"']/g,
+    function(c){
+
+      return {
+        "&":"&amp;",
+        "<":"&lt;",
+        ">":"&gt;",
+        '"':"&quot;",
+        "'":"&#39;"
+      }[c];
+    }
+  );
+}
+
+
+/* ボタン */
+document
+  .getElementById("prevBtn")
+  .addEventListener(
+    "click",
+    goPreviousMonth
+  );
+
+document
+  .getElementById("nextBtn")
+  .addEventListener(
+    "click",
+    goNextMonth
+  );
+
+document
+  .getElementById("calcBtn")
+  .addEventListener(
+    "click",
+    calculateCalories
+  );
+
+document
+  .getElementById("closeBtn")
+  .addEventListener(
+    "click",
+    closeDay
+  );
+
+
+/* 起動 */
+watchMonth();
+
+</script>
+</body>
+</html>
